@@ -1,12 +1,16 @@
 import os
 import numpy as np
 import shutil
+import tqdm
 
-in_file = "../coco/trainvalno5k.txt"
+gen_type = os.environ.get("gen_type")
 
-output_label_dir = "../coco/person_labels"
-output_image_dir = "../coco/person_images"
-output_abstract_file = "./data/coco_person.txt"
+in_file = "../coco/trainvalno5k.txt" if gen_type == "train" else "../coco/5k.txt"
+
+
+output_label_dir = "../coco/person_labels" if gen_type == "train" else "../coco/person_labels_valid"
+output_image_dir = "../coco/person_images" if gen_type == "train" else "../coco/person_images_valid"
+output_abstract_file = "./data/coco_person.txt" if gen_type == "train" else "./data/coco_person_valid.txt"
 output_abstract_file_np = None
 if os.path.exists(output_label_dir):
     shutil.rmtree(output_label_dir)
@@ -16,7 +20,6 @@ if os.path.exists(output_image_dir):
     shutil.rmtree(output_image_dir)
 os.makedirs(output_image_dir)
 
-out_file = "data/coco_person.data"
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif']
 with open(in_file, 'r') as f:
     img_files = f.read().splitlines()
@@ -25,7 +28,7 @@ with open(in_file, 'r') as f:
     # label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
     #                     for x in img_files]
 
-    for img_file in img_files[:100]:
+    for img_file in tqdm.tqdm(img_files):
         label_file = img_file.replace('images', 'labels').replace(os.path.splitext(img_file)[-1], '.txt')
         if os.path.isfile(label_file):
             with open(label_file, 'r') as f_label_file:
