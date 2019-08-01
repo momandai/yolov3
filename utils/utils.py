@@ -278,6 +278,8 @@ def wh_iou(box1, box2):
 
 
 def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, model
+    # np.save('targets.npz', targets.cpu().numpy())
+    # np.save('predictions.npz', p.)
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lxy, lwh, lcls, lobj = ft([0]), ft([0]), ft([0]), ft([0])
     txy, twh, tcls, tbox, indices, anchor_vec = build_targets(model, targets)
@@ -699,3 +701,5 @@ def plot_results(start=0, stop=0):  # from utils.utils import *; plot_results()
     fig.tight_layout()
     ax[4].legend()
     fig.savefig('results.png', dpi=300)
+
+
