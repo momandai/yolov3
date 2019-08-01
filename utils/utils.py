@@ -279,12 +279,16 @@ def wh_iou(box1, box2):
 
 def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, model
     # np.save('targets.npz', targets.cpu().numpy())
-    # np.save('predictions.npz', p.)
+    # np.save('predictions.npz', p.cpu().numpy())
+    torch.save(targets, 'targets.pt')
+    torch.save(p, 'p.pt')
+    torch.save(model, 'model.pt')
+
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lxy, lwh, lcls, lobj = ft([0]), ft([0]), ft([0]), ft([0])
     txy, twh, tcls, tbox, indices, anchor_vec = build_targets(model, targets)
     h = model.hyp  # hyperparameters
-
+    # print("cls_pw: {0}, obj_pw: {1}".format(h['cls_pw'], h['obj_pw']))
     # Define criteria
     MSE = nn.MSELoss()
     BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h['cls_pw']]))
