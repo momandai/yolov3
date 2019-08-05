@@ -287,6 +287,13 @@ def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, mo
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lxy, lwh, lcls, lobj = ft([0]), ft([0]), ft([0]), ft([0])
     txy, twh, tcls, tbox, indices, anchor_vec = build_targets(model, targets)
+    # txy target中心点与所在grid的偏移量(grid单位)  txy是list[3] 分别对应3个yolo输出层
+    # twh target和anchor 宽高的比值再log
+    # tcls target类别
+    # tbox 框(grid单位) 原点为中心所在grid的左上角为原点
+    # indices grid 格子位置
+    # anchor_vec target对应哪个anchor(grid单位)
+
     h = model.hyp  # hyperparameters
     # print("cls_pw: {0}, obj_pw: {1}".format(h['cls_pw'], h['obj_pw']))
     # Define criteria
@@ -310,6 +317,7 @@ def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, mo
             # pi[..., 2:4] = torch.sigmoid(pi[..., 2:4])  # wh power loss (uncomment)
 
             if giou_loss:
+                # ??? 为什么x, y 是sigmoid   w, h是exp
                 pbox = torch.cat((torch.sigmoid(pi[..., 0:2]), torch.exp(pi[..., 2:4]) * anchor_vec[i]), 1)  # predicted
                 giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
                 lxy += (k * h['giou']) * (1.0 - giou).mean()  # giou loss
@@ -348,16 +356,57 @@ def build_targets(model, targets):
         gwh = t[:, 4:6] * layer.ng
         if nt:
             iou = torch.stack([wh_iou(x, gwh) for x in layer.anchor_vec], 0)
-
+            # print("iou: ", iou)
+            # iou: tensor([[3.66294e-01, 3.75270e-01, 5.27138e-01, 3.61301e-03, 4.41488e-01],
+            #              [1.23806e-01, 1.26840e-01, 1.82700e-01, 1.22118e-03, 1.49221e-01],
+            #              [3.14488e-02, 3.22194e-02, 4.64090e-02, 3.10201e-04, 3.79047e-02]], device='cuda:0')
+            # iou[i][j] 表示 第i个anchor与第j个target的wh的iou值
             use_best_anchor = False
             if use_best_anchor:
                 iou, a = iou.max(0)  # best iou and anchor
             else:  # use all anchors
                 na = len(layer.anchor_vec)  # number of anchors
+
                 a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)
+                # print("a:", a)
+                # a: tensor([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2])
                 t = targets.repeat([na, 1])
+                # print("t:", t)
+                # t: tensor([[0.00000e+00, 0.00000e+00, 4.09611e-01, 4.59049e-01, 1.12981e-01, 1.95586e-01],
+                #            [0.00000e+00, 3.70000e+01, 1.59164e-01, 5.20502e-01, 1.59704e-01, 1.41756e-01],
+                #            [0.00000e+00, 0.00000e+00, 6.31995e-01, 4.57126e-01, 1.48280e-01, 2.19917e-01],
+                #            [0.00000e+00, 0.00000e+00, 8.07280e-02, 1.81565e-01, 1.53938e-02, 1.41592e-02],
+                #            [0.00000e+00, 3.70000e+01, 8.59124e-01, 5.61469e-01, 1.72478e-01, 1.54418e-01],
+                #            [0.00000e+00, 0.00000e+00, 4.09611e-01, 4.59049e-01, 1.12981e-01, 1.95586e-01],
+                #            [0.00000e+00, 3.70000e+01, 1.59164e-01, 5.20502e-01, 1.59704e-01, 1.41756e-01],
+                #            [0.00000e+00, 0.00000e+00, 6.31995e-01, 4.57126e-01, 1.48280e-01, 2.19917e-01],
+                #            [0.00000e+00, 0.00000e+00, 8.07280e-02, 1.81565e-01, 1.53938e-02, 1.41592e-02],
+                #            [0.00000e+00, 3.70000e+01, 8.59124e-01, 5.61469e-01, 1.72478e-01, 1.54418e-01],
+                #            [0.00000e+00, 0.00000e+00, 4.09611e-01, 4.59049e-01, 1.12981e-01, 1.95586e-01],
+                #            [0.00000e+00, 3.70000e+01, 1.59164e-01, 5.20502e-01, 1.59704e-01, 1.41756e-01],
+                #            [0.00000e+00, 0.00000e+00, 6.31995e-01, 4.57126e-01, 1.48280e-01, 2.19917e-01],
+                #            [0.00000e+00, 0.00000e+00, 8.07280e-02, 1.81565e-01, 1.53938e-02, 1.41592e-02],
+                #            [0.00000e+00, 3.70000e+01, 8.59124e-01, 5.61469e-01, 1.72478e-01, 1.54418e-01]],
+                #           device='cuda:0')
                 gwh = gwh.repeat([na, 1])
+                # print("gwh: ", gwh)
+                # gwh: tensor([[1.46876, 2.54262],
+                #              [2.07615, 1.84283],
+                #              [1.92765, 2.85892],
+                #              [0.20012, 0.18407],
+                #              [2.24222, 2.00744],
+                #              [1.46876, 2.54262],
+                #              [2.07615, 1.84283],
+                #              [1.92765, 2.85892],
+                #              [0.20012, 0.18407],
+                #              [2.24222, 2.00744],
+                #              [1.46876, 2.54262],
+                #              [2.07615, 1.84283],
+                #              [1.92765, 2.85892],
+                #              [0.20012, 0.18407],
+                #              [2.24222, 2.00744]], device='cuda:0')
                 iou = iou.view(-1)  # use all ious
+                print("iou: ", iou)
 
             # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
             reject = True
@@ -366,6 +415,7 @@ def build_targets(model, targets):
                 t, a, gwh = t[j], a[j], gwh[j]
 
         # Indices
+        # 4个有效的target和anchor的匹配
         b, c = t[:, :2].long().t()  # target image, class
         gxy = t[:, 2:4] * layer.ng  # grid x, y
         gi, gj = gxy.long().t()  # grid x, y indices
@@ -381,12 +431,20 @@ def build_targets(model, targets):
 
         # Width and height
         twh.append(torch.log(gwh / layer.anchor_vec[a]))  # wh yolo method
+        # twh 是 target和anchor 宽高的比值再log
         # twh.append((gwh / layer.anchor_vec[a]) ** (1 / 3) / 2)  # wh power method
 
         # Class
         tcls.append(c)
         if c.shape[0]:
             assert c.max() <= layer.nc, 'Target classes exceed model classes'
+
+    # txy target中心点与所在grid的偏移量(grid单位)  txy是list[3] 分别对应3个yolo输出层
+    # twh target和anchor 宽高的比值再log
+    # tcls target类别
+    # tbox 框(grid单位) 原点为中心所在grid的左上角为原点
+    # indices grid 格子位置
+    # anchor_vec target对应哪个anchor(grid单位)
 
     return txy, twh, tcls, tbox, indices, anchor_vec
 
