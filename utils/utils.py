@@ -406,7 +406,7 @@ def build_targets(model, targets):
                 #              [0.20012, 0.18407],
                 #              [2.24222, 2.00744]], device='cuda:0')
                 iou = iou.view(-1)  # use all ious
-                print("iou: ", iou)
+                # print("iou: ", iou)
 
             # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
             reject = True

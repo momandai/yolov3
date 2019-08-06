@@ -58,6 +58,20 @@ def create_modules(module_defs):
             filters = output_filters[int(module_def['from'])]
             modules.add_module('shortcut_%d' % i, EmptyLayer())
 
+        elif module_def['type'] == 'mobilenet-v2-bottleneck':
+            t = int(module_def['t'])
+            filters = int(module_def['filters'])
+            n = int(module_def['n'])
+            s = int(module_def['stride'])
+            input_channel = output_filters[-1]
+            output_channel = filters
+            for j in range(n):
+                if j == 0:
+                    modules.add_module('mobilenet-v2-bottleneck_%d_%d' % (i, j), InvertedResidual(input_channel, output_channel, s, expand_ratio=t))
+                else:
+                    modules.add_module('mobilenet-v2-bottleneck_%d_%d' % (i, j), InvertedResidual(input_channel, output_channel, 1, expand_ratio=t))
+                input_channel = output_channel
+
         elif module_def['type'] == 'yolo':
             yolo_index += 1
             anchor_idxs = [int(x) for x in module_def['mask'].split(',')]
@@ -85,6 +99,47 @@ class EmptyLayer(nn.Module):
 
     def forward(self, x):
         return x
+
+
+class InvertedResidual(nn.Module):
+    def __init__(self, inp, oup, stride, expand_ratio):
+        super(InvertedResidual, self).__init__()
+        self.stride = stride
+        assert stride in [1, 2]
+
+        hidden_dim = round(inp * expand_ratio)
+        self.use_res_connect = self.stride == 1 and inp == oup
+
+        if expand_ratio == 1:
+            self.conv = nn.Sequential(
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+        else:
+            self.conv = nn.Sequential(
+                # pw
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
 
 
 class YOLOLayer(nn.Module):
@@ -174,13 +229,14 @@ class Darknet(nn.Module):
         self.seen = np.array([0], dtype=np.int64)  # (int64) number of images seen during training
 
     def forward(self, x, var=None):
+        # print(x.shape)
         img_size = max(x.shape[-2:])
         layer_outputs = []
         output = []
 
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
             mtype = module_def['type']
-            if mtype in ['convolutional', 'upsample', 'maxpool']:
+            if mtype in ['convolutional', 'upsample', 'maxpool', 'mobilenet-v2-bottleneck']:
                 x = module(x)
             elif mtype == 'route':
                 layer_i = [int(x) for x in module_def['layers'].split(',')]
