@@ -231,6 +231,7 @@ class Darknet(nn.Module):
     def forward(self, x, var=None):
         # print(x.shape)
         img_size = max(x.shape[-2:])
+        # img_size = 416
         layer_outputs = []
         output = []
 
