@@ -1,8 +1,13 @@
 # pip3 install -U -r requirements.txt
-# conda install numpy opencv matplotlib tqdm pillow && conda install pytorch torchvision -c pytorch
+# conda install -y numpy opencv matplotlib tqdm pillow && conda install -y scikit-image -c conda-forge && conda install -y -c spyder-ide spyder-line-profiler
+# conda install -y -c conda-forge tensorboard && conda install -y -c anaconda future
+# conda install pytorch torchvision -c pytorch
+
 numpy
 opencv-python
-torch >= 1.0.0
+torch >= 1.1.0
 matplotlib
 pycocotools
 tqdm
+tb-nightly
+future
