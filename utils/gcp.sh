@@ -5,6 +5,7 @@ rm -rf sample_data yolov3 darknet apex coco cocoapi knife knifec
 git clone https://github.com/ultralytics/yolov3
 git clone https://github.com/AlexeyAB/darknet && cd darknet && make GPU=1 CUDNN=1 CUDNN_HALF=1 OPENCV=1 && wget -c https://pjreddie.com/media/files/darknet53.conv.74 && cd ..
 git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" . --user && cd .. && rm -rf apex
+git clone https://github.com/cocodataset/cocoapi && cd cocoapi/PythonAPI && make && cd ../.. && cp -r cocoapi/PythonAPI/pycocotools yolov3
 python3 -c "
 from yolov3.utils.google_utils import gdrive_download
 gdrive_download('1HaXkef9z6y5l4vUnCYgdmEAj61c6bfWO','coco.zip')
@@ -106,6 +107,7 @@ python3 test.py --data ../supermarket2/supermarket2.data --weights weights/yolov
 python3 test.py --data ../supermarket2/supermarket2.data --weights weights/yolov3-spp-sm2-1cls-scalexy_200_5000.weights --cfg ../yolov3-spp-sm2-1cls-scalexy_200.cfg --img-size 320 --conf-thres 0.2  # test
 python3 test.py --data ../supermarket2/supermarket2.data --weights ../darknet/backup/yolov3-spp-sm2-1cls-scalexy_variable_5000.weights --cfg ../yolov3-spp-sm2-1cls-scalexy_variable.cfg --img-size 320 --conf-thres 0.2  # test
 
+python3 train.py --img-size 320 --epochs 27 --batch-size 64 --accumulate 1 --nosave --notest && python3 test.py --weights weights/last.pt --img-size 320 --save-json && sudo shutdown
 
 # Debug/Development
 python3 train.py --data data/coco.data --img-size 320 --single-scale --batch-size 64 --accumulate 1 --epochs 1 --evolve --giou

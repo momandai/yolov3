@@ -4,8 +4,7 @@ from pathlib import Path
 
 import torch.nn.functional as F
 
-ONNX_EXPORT = True
-
+ONNX_EXPORT = False
 
 def create_modules(module_defs):
     """
@@ -32,9 +31,10 @@ def create_modules(module_defs):
                                                    bias=not bn))
             if bn:
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
-            if mdef['activation'] == 'leaky':
-                # modules.add_module('activation', nn.PReLU(num_parameters=filters, init=0.1))
+            if mdef['activation'] == 'leaky':  # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
+                # modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))
+                # modules.add_module('activation', Swish())
 
         elif mdef['type'] == 'maxpool':
             kernel_size = int(mdef['size'])
@@ -96,14 +96,12 @@ def create_modules(module_defs):
     return hyperparams, module_list
 
 
-class EmptyLayer(nn.Module):
-    """Placeholder for 'route' and 'shortcut' layers"""
-
+class Swish(nn.Module):
     def __init__(self):
-        super(EmptyLayer, self).__init__()
+        super(Swish, self).__init__()
 
     def forward(self, x):
-        return x
+        return x * torch.sigmoid(x)
 
 
 class InvertedResidual(nn.Module):
@@ -161,7 +159,7 @@ class YOLOLayer(nn.Module):
             stride = [32, 16, 8][yolo_index]  # stride of this layer
             nx = int(img_size[1] / stride)  # number x grid points
             ny = int(img_size[0] / stride)  # number y grid points
-            create_grids(self, max(img_size), (nx, ny))
+            create_grids(self, img_size, (nx, ny))
 
     def forward(self, p, img_size, var=None):
         if ONNX_EXPORT:
@@ -185,25 +183,24 @@ class YOLOLayer(nn.Module):
             grid_xy = self.grid_xy.repeat((1, self.na, 1, 1, 1)).view((1, -1, 2))
             anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2))
 
-            # p = p.view(-1, 5 + self.nc)
-            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy[0]  # x, y
-            # wh = torch.exp(p[..., 2:4]) * anchor_wh[0]  # width, height
-            # p_conf = torch.sigmoid(p[:, 4:5])  # Conf
-            # p_cls = F.softmax(p[:, 5:85], 1) * p_conf  # SSD-like conf
-            # return torch.cat((xy / ngu[0], wh, p_conf, p_cls), 1).t()
+            p = p.view(-1, 5 + self.nc)
+            xy = torch.sigmoid(p[..., 0:2]) + grid_xy[0]  # x, y
+            wh = torch.exp(p[..., 2:4]) * anchor_wh[0]  # width, height
+            p_conf = torch.sigmoid(p[:, 4:5])  # Conf
+            p_cls = F.softmax(p[:, 5:85], 1) * p_conf  # SSD-like conf
+            return torch.cat((xy / ngu[0], wh, p_conf, p_cls), 1).t()
 
-            p = p.view(1, -1, 5 + self.nc)
-            xy = (torch.sigmoid(p[..., 0:2]) + grid_xy) * stride  # x, y
-            wh = torch.exp(p[..., 2:4]) * anchor_wh * stride  # width, height
-            p_conf = torch.sigmoid(p[..., 4:5])  # Conf
-            p_cls = p[..., 5:5 + self.nc]
-            # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
-            # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
-            p_cls = torch.exp(p_cls).permute((2, 1, 0))
-            p_cls = p_cls / p_cls.sum(0).unsqueeze(0) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
-            p_cls = p_cls.permute(2, 1, 0)
-            # tmp = torch.cat((xy / ngu, wh, p_conf, p_cls), 2).squeeze().t()
-            return torch.cat((xy, wh, p_conf, p_cls), 2).squeeze().t()
+            # p = p.view(1, -1, 5 + self.nc)
+            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
+            # wh = torch.exp(p[..., 2:4]) * anchor_wh  # width, height
+            # p_conf = torch.sigmoid(p[..., 4:5])  # Conf
+            # p_cls = p[..., 5:5 + self.nc]
+            # # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
+            # # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
+            # p_cls = torch.exp(p_cls).permute((2, 1, 0))
+            # p_cls = p_cls / p_cls.sum(0).unsqueeze(0) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
+            # p_cls = p_cls.permute(2, 1, 0)
+            # return torch.cat((xy / ngu, wh, p_conf, p_cls), 2).squeeze().t()
 
 
         else:  # inference
@@ -214,6 +211,8 @@ class YOLOLayer(nn.Module):
             io[..., :4] *= self.stride
 
             # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
+            io[..., :4] *= self.stride
+
             io[..., 4:] = torch.sigmoid(io[..., 4:])  # p_conf, p_cls
             # io[..., 5:] = F.softmax(io[..., 5:], dim=4)  # p_cls
 
@@ -263,11 +262,9 @@ class Darknet(nn.Module):
                         x = torch.cat([layer_outputs[i] for i in layer_i], 1)
                     # print(''), [print(layer_outputs[i].shape) for i in layer_i], print(x.shape)
             elif mtype == 'shortcut':
-                layer_i = int(mdef['from'])
-                x = layer_outputs[-1] + layer_outputs[layer_i]
+                x += layer_outputs[int(mdef['from'])]
             elif mtype == 'yolo':
                 x = module(x, img_size)
-                # print(x)
                 output.append(x)
             layer_outputs.append(x)
 
@@ -304,8 +301,8 @@ def get_yolo_layers(model):
 
 def create_grids(self, img_size=416, ng=(13, 13), device='cpu', type=torch.float32):
     nx, ny = ng  # x and y grid size
-    self.img_size = img_size
-    self.stride = img_size / max(ng)
+    self.img_size = max(img_size)
+    self.stride = self.img_size / max(ng)
 
     # build xy offsets
     yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
