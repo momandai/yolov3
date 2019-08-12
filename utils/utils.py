@@ -1,5 +1,8 @@
 import glob
+import os
 import random
+import shutil
+from pathlib import Path
 
 import cv2
 import matplotlib
@@ -9,7 +12,6 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from tqdm import tqdm
-from pathlib import Path
 
 from . import torch_utils  # , google_utils
 
@@ -178,18 +180,25 @@ def ap_per_class(tp, conf, pred_cls, target_cls):
             tpc = (tp[i]).cumsum()
 
             # Recall
-            recall_curve = tpc / (n_gt + 1e-16)
-            r.append(recall_curve[-1])
+            recall = tpc / (n_gt + 1e-16)  # recall curve
+            r.append(recall[-1])
 
             # Precision
-            precision_curve = tpc / (tpc + fpc)
-            p.append(precision_curve[-1])
+            precision = tpc / (tpc + fpc)  # precision curve
+            p.append(precision[-1])
 
             # AP from recall-precision curve
-            ap.append(compute_ap(recall_curve, precision_curve))
+            ap.append(compute_ap(recall, precision))
 
             # Plot
-            # plt.plot(recall_curve, precision_curve)
+            # fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+            # ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
+            # ax.set_xlabel('YOLOv3-SPP')
+            # ax.set_xlabel('Recall')
+            # ax.set_ylabel('Precision')
+            # ax.set_xlim(0, 1)
+            # fig.tight_layout()
+            # fig.savefig('PR_curve.png', dpi=300)
 
     # Compute F1 score (harmonic mean of precision and recall)
     p, r, ap = np.array(p), np.array(r), np.array(ap)
@@ -207,21 +216,18 @@ def compute_ap(recall, precision):
     # Returns
         The average precision as computed in py-faster-rcnn.
     """
-    # correct AP calculation
-    # first append sentinel values at the end
-
+    # Append sentinel values to beginning and end
     mrec = np.concatenate(([0.], recall, [1.]))
     mpre = np.concatenate(([0.], precision, [0.]))
 
-    # compute the precision envelope
+    # Compute the precision envelope
     for i in range(mpre.size - 1, 0, -1):
         mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
 
-    # to calculate area under PR curve, look for points
-    # where X axis (recall) changes value
+    # Calculate area under PR curve, looking for points where x axis (recall) changes
     i = np.where(mrec[1:] != mrec[:-1])[0]
 
-    # and sum (\Delta recall) * prec
+    # Sum (\Delta recall) * prec
     ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
     return ap
 
@@ -316,19 +322,23 @@ def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, mo
             tobj[b, a, gj, gi] = 1.0  # obj
             # pi[..., 2:4] = torch.sigmoid(pi[..., 2:4])  # wh power loss (uncomment)
 
+            # s = 1.5  # scale_xy
+            pxy = torch.sigmoid(pi[..., 0:2])  # * s - (s - 1) / 2
             if giou_loss:
                 # ??? 为什么x, y 是sigmoid   w, h是exp
-                pbox = torch.cat((torch.sigmoid(pi[..., 0:2]), torch.exp(pi[..., 2:4]) * anchor_vec[i]), 1)  # predicted
+                # pbox = torch.cat((torch.sigmoid(pi[..., 0:2]), torch.exp(pi[..., 2:4]) * anchor_vec[i]), 1)  # predicted
+                pbox = torch.cat((pxy, torch.exp(pi[..., 2:4]) * anchor_vec[i]), 1)  # predicted
                 giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
                 lxy += (k * h['giou']) * (1.0 - giou).mean()  # giou loss
             else:
-                lxy += (k * h['xy']) * MSE(torch.sigmoid(pi[..., 0:2]), txy[i])  # xy loss
+                lxy += (k * h['xy']) * MSE(pxy, txy[i])  # xy loss
                 lwh += (k * h['wh']) * MSE(pi[..., 2:4], twh[i])  # wh yolo loss
 
-            tclsm = torch.zeros_like(pi[..., 5:])
-            tclsm[range(nb), tcls[i]] = 1.0
-            lcls += (k * h['cls']) * BCEcls(pi[..., 5:], tclsm)  # cls loss (BCE)
-            # lcls += (k * h['cls']) * CE(pi[..., 5:], tcls[i])  # cls loss (CE)
+            if model.nc > 1:  # cls loss (only if multiple classes)
+                tclsm = torch.zeros_like(pi[..., 5:])
+                tclsm[range(nb), tcls[i]] = 1.0
+                lcls += (k * h['cls']) * BCEcls(pi[..., 5:], tclsm)  # BCE
+                # lcls += (k * h['cls']) * CE(pi[..., 5:], tcls[i])  # CE
 
             # Append targets to text file
             # with open('targets.txt', 'a') as file:
@@ -342,31 +352,28 @@ def compute_loss(p, targets, model, giou_loss=True):  # predictions, targets, mo
 
 def build_targets(model, targets):
     # targets = [image, class, x, y, w, h]
-    iou_thres = model.hyp['iou_t']  # hyperparameter
-    if type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel):
-        model = model.module
 
     nt = len(targets)
-    txy, twh, tcls, tbox, indices, anchor_vec = [], [], [], [], [], []
+    txy, twh, tcls, tbox, indices, av = [], [], [], [], [], []
+    multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     for i in model.yolo_layers:
-        layer = model.module_list[i][0]
+        # get number of grid points and anchor vec for this yolo layer
+        if multi_gpu:
+            ng, anchor_vec = model.module.module_list[i].ng, model.module.module_list[i].anchor_vec
+        else:
+            ng, anchor_vec = model.module_list[i].ng, model.module_list[i].anchor_vec
 
         # iou of targets-anchors
         t, a = targets, []
-        gwh = t[:, 4:6] * layer.ng
+        gwh = t[:, 4:6] * ng
         if nt:
-            iou = torch.stack([wh_iou(x, gwh) for x in layer.anchor_vec], 0)
-            # print("iou: ", iou)
-            # iou: tensor([[3.66294e-01, 3.75270e-01, 5.27138e-01, 3.61301e-03, 4.41488e-01],
-            #              [1.23806e-01, 1.26840e-01, 1.82700e-01, 1.22118e-03, 1.49221e-01],
-            #              [3.14488e-02, 3.22194e-02, 4.64090e-02, 3.10201e-04, 3.79047e-02]], device='cuda:0')
-            # iou[i][j] 表示 第i个anchor与第j个target的wh的iou值
+            iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
+
             use_best_anchor = False
             if use_best_anchor:
                 iou, a = iou.max(0)  # best iou and anchor
             else:  # use all anchors
-                na = len(layer.anchor_vec)  # number of anchors
-
+                na = len(anchor_vec)  # number of anchors
                 a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)
                 # print("a:", a)
                 # a: tensor([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2])
@@ -411,13 +418,13 @@ def build_targets(model, targets):
             # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
             reject = True
             if reject:
-                j = iou > iou_thres
+                j = iou > model.hyp['iou_t']  # iou threshold hyperparameter
                 t, a, gwh = t[j], a[j], gwh[j]
 
         # Indices
         # 4个有效的target和anchor的匹配
         b, c = t[:, :2].long().t()  # target image, class
-        gxy = t[:, 2:4] * layer.ng  # grid x, y
+        gxy = t[:, 2:4] * ng  # grid x, y
         gi, gj = gxy.long().t()  # grid x, y indices
         indices.append((b, a, gj, gi))
 
@@ -427,17 +434,19 @@ def build_targets(model, targets):
 
         # GIoU
         tbox.append(torch.cat((gxy, gwh), 1))  # xywh (grids)
-        anchor_vec.append(layer.anchor_vec[a])
+        av.append(anchor_vec[a])  # anchor vec
 
         # Width and height
-        twh.append(torch.log(gwh / layer.anchor_vec[a]))  # wh yolo method
+        twh.append(torch.log(gwh / anchor_vec[a]))  # wh yolo method
+        # twh.append((gwh / anchor_vec[a]) ** (1 / 3) / 2)  # wh power method
+        
         # twh 是 target和anchor 宽高的比值再log
         # twh.append((gwh / layer.anchor_vec[a]) ** (1 / 3) / 2)  # wh power method
 
         # Class
         tcls.append(c)
-        if c.shape[0]:
-            assert c.max() <= layer.nc, 'Target classes exceed model classes'
+        if c.shape[0]:  # if any targets
+            assert c.max() <= model.nc, 'Target classes exceed model classes'
 
     # txy target中心点与所在grid的偏移量(grid单位)  txy是list[3] 分别对应3个yolo输出层
     # twh target和anchor 宽高的比值再log
@@ -446,7 +455,8 @@ def build_targets(model, targets):
     # indices grid 格子位置
     # anchor_vec target对应哪个anchor(grid单位)
 
-    return txy, twh, tcls, tbox, indices, anchor_vec
+    
+    return txy, twh, tcls, tbox, indices, av
 
 
 def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
@@ -606,23 +616,42 @@ def select_best_evolve(path='evolve*.txt'):  # from utils.utils import *; select
         print(file, x[fitness.argmax()])
 
 
-def kmeans_targets(path='./data/coco_64img.txt'):  # from utils.utils import *; kmeans_targets()
+def coco_single_class_labels(path='../coco/labels/train2014/', label_class=43):
+    # Makes single-class coco datasets. from utils.utils import *; coco_single_class_labels()
+    if os.path.exists('new/'):
+        shutil.rmtree('new/')  # delete output folder
+    os.makedirs('new/')  # make new output folder
+    os.makedirs('new/labels/')
+    os.makedirs('new/images/')
+    for file in tqdm(sorted(glob.glob('%s/*.*' % path))):
+        with open(file, 'r') as f:
+            labels = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
+        i = labels[:, 0] == label_class
+        if any(i):
+            img_file = file.replace('labels', 'images').replace('txt', 'jpg')
+            labels[:, 0] = 0  # reset class to 0
+            with open('new/images.txt', 'a') as f:  # add image to dataset list
+                f.write(img_file + '\n')
+            with open('new/labels/' + Path(file).name, 'a') as f:  # write label
+                for l in labels[i]:
+                    f.write('%g %.6f %.6f %.6f %.6f\n' % tuple(l))
+            shutil.copyfile(src=img_file, dst='new/images/' + Path(file).name.replace('txt', 'jpg'))  # copy images
+
+
+def kmeans_targets(path='./data/coco_64img.txt', n=9, img_size=320):  # from utils.utils import *; kmeans_targets()
+    # Produces a list of target kmeans suitable for use in *.cfg files
+    img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif']
     with open(path, 'r') as f:
-        img_files = f.read().splitlines()
-        img_files = list(filter(lambda x: len(x) > 0, img_files))
+        img_files = [x for x in f.read().splitlines() if os.path.splitext(x)[-1].lower() in img_formats]
 
     # Read shapes
-    n = len(img_files)
-    assert n > 0, 'No images found in %s' % path
-    label_files = [x.replace('images', 'labels').
-                       replace('.jpeg', '.txt').
-                       replace('.jpg', '.txt').
-                       replace('.bmp', '.txt').
-                       replace('.png', '.txt') for x in img_files]
+    nf = len(img_files)
+    assert nf > 0, 'No images found in %s' % path
+    label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt') for x in img_files]
     s = np.array([Image.open(f).size for f in tqdm(img_files, desc='Reading image shapes')])  # (width, height)
 
     # Read targets
-    labels = [np.zeros((0, 5))] * n
+    labels = [np.zeros((0, 5))] * nf
     iter = tqdm(label_files, desc='Reading labels')
     for i, file in enumerate(iter):
         try:
@@ -634,19 +663,43 @@ def kmeans_targets(path='./data/coco_64img.txt'):  # from utils.utils import *; 
                     assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
                     l[:, [1, 3]] *= s[i][0]
                     l[:, [2, 4]] *= s[i][1]
-                    l[:, 1:] *= 320 / max(s[i])
+                    l[:, 1:] *= img_size / max(s[i])  # nominal img_size for training here
                     labels[i] = l
         except:
             pass  # print('Warning: missing labels for %s' % self.img_files[i])  # missing label file
     assert len(np.concatenate(labels, 0)) > 0, 'No labels found. Incorrect label paths provided.'
 
-    # kmeans
+    # kmeans calculation
     from scipy import cluster
     wh = np.concatenate(labels, 0)[:, 3:5]
-    k = cluster.vq.kmeans(wh, 9)[0]
+    k = cluster.vq.kmeans(wh, n)[0]
     k = k[np.argsort(k.prod(1))]
     for x in k.ravel():
-        print('%.1f, ' % x, end='')
+        print('%.1f, ' % x, end='')  # drop-in replacement for *.cfg anchors
+
+
+def print_mutation(hyp, results, bucket=''):
+    # Print mutation results to evolve.txt (for use with train.py --evolve)
+    a = '%11s' * len(hyp) % tuple(hyp.keys())  # hyperparam keys
+    b = '%11.3g' * len(hyp) % tuple(hyp.values())  # hyperparam values
+    c = '%11.3g' * len(results) % results  # results (P, R, mAP, F1, test_loss)
+    print('\n%s\n%s\nEvolved fitness: %s\n' % (a, b, c))
+
+    if bucket:
+        os.system('gsutil cp gs://%s/evolve.txt .' % bucket)  # download evolve.txt
+        with open('evolve.txt', 'a') as f:  # append result
+            f.write(c + b + '\n')
+        x = np.unique(np.loadtxt('evolve.txt', ndmin=2), axis=0)  # load unique rows
+        np.savetxt('evolve.txt', x[np.argsort(-fitness(x))], '%11.3g')  # save sort by fitness
+        os.system('gsutil cp evolve.txt gs://%s' % bucket)  # upload evolve.txt
+    else:
+        with open('evolve.txt', 'a') as f:
+            f.write(c + b + '\n')
+
+
+def fitness(x):
+    # Returns fitness (for use with results.txt or evolve.txt)
+    return 0.50 * x[:, 2] + 0.50 * x[:, 3]  # fitness = 0.9 * mAP + 0.1 * F1
 
 
 # Plotting functions ---------------------------------------------------------------------------------------------------
@@ -681,7 +734,7 @@ def plot_wh_methods():  # from utils.utils import *; plot_wh_methods()
     plt.ylabel('output')
     plt.legend()
     fig.tight_layout()
-    fig.savefig('comparison.png', dpi=300)
+    fig.savefig('comparison.png', dpi=200)
 
 
 def plot_images(imgs, targets, paths=None, fname='images.jpg'):
@@ -706,7 +759,7 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
             s = Path(paths[i]).name
             plt.title(s[:min(len(s), 40)], fontdict={'size': 8})  # limit to 40 characters
     fig.tight_layout()
-    fig.savefig(fname, dpi=300)
+    fig.savefig(fname, dpi=200)
     plt.close()
 
 
@@ -726,7 +779,7 @@ def plot_test_txt():  # from utils.utils import *; plot_test()
     ax[0].hist(cx, bins=600)
     ax[1].hist(cy, bins=600)
     fig.tight_layout()
-    plt.savefig('hist1d.jpg', dpi=300)
+    plt.savefig('hist1d.jpg', dpi=200)
 
 
 def plot_targets_txt():  # from utils.utils import *; plot_targets_txt()
@@ -742,18 +795,74 @@ def plot_targets_txt():  # from utils.utils import *; plot_targets_txt()
         ax[i].legend()
         ax[i].set_title(s[i])
     fig.tight_layout()
-    plt.savefig('targets.jpg', dpi=300)
+    plt.savefig('targets.jpg', dpi=200)
+
+
+def plot_evolution_results(hyp):  # from utils.utils import *; plot_evolution_results(hyp)
+    # Plot hyperparameter evolution results in evolve.txt
+    x = np.loadtxt('evolve.txt')
+    f = fitness(x)
+    weights = (f - f.min()) ** 2  # for weighted results
+    fig = plt.figure(figsize=(12, 10))
+    matplotlib.rc('font', **{'size': 8})
+    for i, (k, v) in enumerate(hyp.items()):
+        y = x[:, i + 5]
+        # mu = (y * weights).sum() / weights.sum()  # best weighted result
+        mu = y[f.argmax()]  # best single result
+        plt.subplot(4, 5, i + 1)
+        plt.plot(mu, f.max(), 'o', markersize=10)
+        plt.plot(y, f, '.')
+        plt.title('%s = %.3g' % (k, mu), fontdict={'size': 9})  # limit to 40 characters
+        print('%15s: %.3g' % (k, mu))
+    fig.tight_layout()
+    plt.savefig('evolve.png', dpi=200)
 
 
 def plot_results(start=0, stop=0):  # from utils.utils import *; plot_results()
     # Plot training results files 'results*.txt'
-    # import os; os.system('wget https://storage.googleapis.com/ultralytics/yolov3/results_v3.txt')
+    fig, ax = plt.subplots(2, 5, figsize=(14, 7))
+    ax = ax.ravel()
+    s = ['GIoU', 'Confidence', 'Classification', 'Precision', 'Recall',
+         'val GIoU', 'val Confidence', 'val Classification', 'mAP', 'F1']
+    for f in sorted(glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')):
+        results = np.loadtxt(f, usecols=[2, 4, 5, 9, 10, 13, 14, 15, 11, 12]).T
+        n = results.shape[1]  # number of rows
+        x = range(start, min(stop, n) if stop else n)
+        for i in range(10):
+            ax[i].plot(x, results[i, x], marker='.', label=f.replace('.txt', ''))
+            ax[i].set_title(s[i])
+    fig.tight_layout()
+    ax[4].legend()
+    fig.savefig('results.png', dpi=200)
 
+
+def plot_results_overlay(start=1, stop=0):  # from utils.utils import *; plot_results_overlay()
+    # Plot training results files 'results*.txt', overlaying train and val losses
+    s = ['train', 'train', 'train', 'Precision', 'mAP', 'val', 'val', 'val', 'Recall', 'F1']  # legends
+    t = ['GIoU', 'Confidence', 'Classification', 'P-R', 'mAP-F1']  # titles
+    for f in sorted(glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')):
+        results = np.loadtxt(f, usecols=[2, 4, 5, 9, 11, 13, 14, 15, 10, 12]).T
+        n = results.shape[1]  # number of rows
+        x = range(start, min(stop, n) if stop else n)
+        fig, ax = plt.subplots(1, 5, figsize=(14, 3.5))
+        ax = ax.ravel()
+        for i in range(5):
+            for j in [i, i + 5]:
+                ax[i].plot(x, results[j, x], marker='.', label=s[j])
+            ax[i].set_title(t[i])
+            ax[i].legend()
+            ax[i].set_ylabel(f) if i == 0 else None  # add filename
+        fig.tight_layout()
+        fig.savefig(f.replace('.txt', '.png'), dpi=200)
+
+
+def plot_results_orig(start=0, stop=0):  # from utils.utils import *; plot_results_orig()
+    # Plot training results files 'results*.txt' in original format
     fig, ax = plt.subplots(2, 5, figsize=(14, 7))
     ax = ax.ravel()
     s = ['GIoU/XY', 'Width/Height', 'Confidence', 'Classification', 'Train Loss', 'Precision', 'Recall', 'mAP', 'F1',
          'Test Loss']
-    for f in sorted(glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')):
+    for f in sorted(glob.glob('results*.txt') + glob.glob('../../Google Drive/results*.txt')):
         results = np.loadtxt(f, usecols=[2, 3, 4, 5, 6, 9, 10, 11, 12, 13]).T
         n = results.shape[1]  # number of rows
         x = range(start, min(stop, n) if stop else n)
@@ -762,6 +871,9 @@ def plot_results(start=0, stop=0):  # from utils.utils import *; plot_results()
             ax[i].set_title(s[i])
     fig.tight_layout()
     ax[4].legend()
-    fig.savefig('results.png', dpi=300)
+    fig.savefig('results.png', dpi=200)
 
 
+def version_to_tuple(version):
+    # Used to compare versions of library
+    return tuple(map(int, (version.split("."))))

@@ -8,6 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from PIL import Image, ExifTags
@@ -39,12 +40,11 @@ def exif_size(img):
 
 
 class LoadImages:  # for inference
-    def __init__(self, path, img_size=416):
-        self.height = img_size
-
+    def __init__(self, path, img_size=416, half=False):
+        path = str(Path(path))  # os-agnostic
         files = []
         if os.path.isdir(path):
-            files = sorted(glob.glob('%s/*.*' % path))
+            files = sorted(glob.glob(os.path.join(path, '*.*')))
         elif os.path.isfile(path):
             files = [path]
 
@@ -52,10 +52,12 @@ class LoadImages:  # for inference
         videos = [x for x in files if os.path.splitext(x)[-1].lower() in vid_formats]
         nI, nV = len(images), len(videos)
 
+        self.img_size = img_size
         self.files = images + videos
         self.nF = nI + nV  # number of files
         self.video_flag = [False] * nI + [True] * nV
         self.mode = 'images'
+        self.half = half  # half precision fp16 images
         if any(videos):
             self.new_video(videos[0])  # new video
         else:
@@ -92,15 +94,15 @@ class LoadImages:  # for inference
             # Read image
             self.count += 1
             img0 = cv2.imread(path)  # BGR
-            assert img0 is not None, 'File Not Found ' + path
+            assert img0 is not None, 'Image Not Found ' + path
             print('image %g/%g %s: ' % (self.count, self.nF, path), end='')
 
         # Padded resize
-        img, *_ = letterbox(img0, new_shape=self.height)
+        img, *_ = letterbox(img0, new_shape=self.img_size)
 
         # Normalize RGB
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB
-        img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
+        img = np.ascontiguousarray(img, dtype=np.float16 if self.half else np.float32)  # uint8 to fp16/fp32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
         # cv2.imwrite(path + '.letterbox.jpg', 255 * img.transpose((1, 2, 0))[:, :, ::-1])  # save letterbox image
@@ -116,9 +118,12 @@ class LoadImages:  # for inference
 
 
 class LoadWebcam:  # for inference
-    def __init__(self, img_size=416):
-        self.cam = cv2.VideoCapture(0)
-        self.height = img_size
+    def __init__(self, img_size=416, half=False):
+        self.img_size = img_size
+        self.half = half  # half precision fp16 images
+        self.cam = cv2.VideoCapture(0)  # local camera
+        # self.cam = cv2.VideoCapture('rtsp://192.168.1.64/1')  # IP camera
+        # self.cam = cv2.VideoCapture('rtsp://username:password@192.168.1.64/1')  # IP camera with login
 
     def __iter__(self):
         self.count = -1
@@ -138,11 +143,11 @@ class LoadWebcam:  # for inference
         print('webcam %g: ' % self.count, end='')
 
         # Padded resize
-        img, *_ = letterbox(img0, new_shape=self.height)
+        img, *_ = letterbox(img0, new_shape=self.img_size)
 
         # Normalize RGB
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB
-        img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
+        img = np.ascontiguousarray(img, dtype=np.float16 if self.half else np.float32)  # uint8 to fp16/fp32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
         return img_path, img, img0, None
@@ -152,10 +157,11 @@ class LoadWebcam:  # for inference
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False):
+    def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=True, image_weights=False, cache_images=False):
+        path = str(Path(path))  # os-agnostic
         with open(path, 'r') as f:
-            img_files = f.read().splitlines()
-            self.img_files = [x for x in img_files if os.path.splitext(x)[-1].lower() in img_formats]
+            self.img_files = [x.replace('/', os.sep) for x in f.read().splitlines()  # os-agnostic
+                              if os.path.splitext(x)[-1].lower() in img_formats]
 
         n = len(self.img_files)
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
@@ -209,40 +215,56 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
         self.labels = [None] * n
-        preload_labels = False
-        if preload_labels:
+        if augment or image_weights:  # cache labels for faster training
             self.labels = [np.zeros((0, 5))] * n
-            iter = tqdm(self.label_files, desc='Reading labels') if n > 10 else self.label_files
             extract_bounding_boxes = False
-            for i, file in enumerate(iter):
+            pbar = tqdm(self.label_files, desc='Reading labels')
+            nm, nf, ne = 0, 0, 0  # number missing, number found, number empty
+            for i, file in enumerate(pbar):
                 try:
                     with open(file, 'r') as f:
                         l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-                        if l.shape[0]:
-                            assert l.shape[1] == 5, '> 5 label columns: %s' % file
-                            assert (l >= 0).all(), 'negative labels: %s' % file
-                            assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
-                            self.labels[i] = l
-
-                            # Extract object detection boxes for a second stage classifier
-                            if extract_bounding_boxes:
-                                p = Path(self.img_files[i])
-                                img = cv2.imread(str(p))
-                                h, w, _ = img.shape
-                                for j, x in enumerate(l):
-                                    f = '%s%sclassification%s%g_%g_%s' % (
-                                        p.parent.parent, os.sep, os.sep, x[0], j, p.name)
-                                    if not os.path.exists(Path(f).parent):
-                                        os.makedirs(Path(f).parent)  # make new output folder
-                                    box = xywh2xyxy(x[1:].reshape(-1, 4)).ravel()
-                                    box = np.clip(box, 0, 1)  # clip boxes outside of image
-                                    result = cv2.imwrite(f, img[int(box[1] * h):int(box[3] * h),
-                                                            int(box[0] * w):int(box[2] * w)])
-                                    if not result:
-                                        print('stop')
                 except:
-                    pass  # print('Warning: missing labels for %s' % self.img_files[i])  # missing label file
-            assert len(np.concatenate(self.labels, 0)) > 0, 'No labels found. Incorrect label paths provided.'
+                    nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
+                    continue
+
+                if l.shape[0]:
+                    assert l.shape[1] == 5, '> 5 label columns: %s' % file
+                    assert (l >= 0).all(), 'negative labels: %s' % file
+                    assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
+                    self.labels[i] = l
+                    nf += 1  # file found
+
+                    # Extract object detection boxes for a second stage classifier
+                    if extract_bounding_boxes:
+                        p = Path(self.img_files[i])
+                        img = cv2.imread(str(p))
+                        h, w, _ = img.shape
+                        for j, x in enumerate(l):
+                            f = '%s%sclassifier%s%g_%g_%s' % (p.parent.parent, os.sep, os.sep, x[0], j, p.name)
+                            if not os.path.exists(Path(f).parent):
+                                os.makedirs(Path(f).parent)  # make new output folder
+                            box = xywh2xyxy(x[1:].reshape(-1, 4)).ravel()
+                            b = np.clip(box, 0, 1)  # clip boxes outside of image
+                            ret_val = cv2.imwrite(f, img[int(b[1] * h):int(b[3] * h), int(b[0] * w):int(b[2] * w)])
+                            assert ret_val, 'Failure extracting classifier boxes'
+                else:
+                    ne += 1  # file empty
+
+                pbar.desc = 'Reading labels (%g found, %g missing, %g empty for %g images)' % (nf, nm, ne, n)
+            assert nf > 0, 'No labels found. Recommend correcting image and label paths.'
+
+        # Cache images into memory for faster training (~5GB)
+        if cache_images and augment:  # if training
+            for i in tqdm(range(min(len(self.img_files), 10000)), desc='Reading images'):  # max 10k images
+                img_path = self.img_files[i]
+                img = cv2.imread(img_path)  # BGR
+                assert img is not None, 'Image Not Found ' + img_path
+                r = self.img_size / max(img.shape)  # size ratio
+                if self.augment and r < 1:  # if training (NOT testing), downsize to inference shape
+                    h, w, _ = img.shape
+                    img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # or INTER_AREA
+                self.imgs[i] = img
 
         # Detect corrupted images https://medium.com/joelthchao/programmatically-detect-corrupted-image-8c1b2006c3d3
         detect_corrupted_images = False
@@ -275,11 +297,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = self.imgs[index]
         if img is None:
             img = cv2.imread(img_path)  # BGR
-            assert img is not None, 'File Not Found ' + img_path
+            assert img is not None, 'Image Not Found ' + img_path
             r = self.img_size / max(img.shape)  # size ratio
             if self.augment and r < 1:  # if training (NOT testing), downsize to inference shape
                 h, w, _ = img.shape
-                img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_AREA)
+                img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # INTER_LINEAR fastest
 
             if self.n < 3000:  # cache into memory if image count < 3000
                 self.imgs[index] = img
@@ -317,7 +339,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if x is None:  # labels not preloaded
                 with open(label_path, 'r') as f:
                     x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-                    self.labels[index] = x  # save for next time
 
             if x.size > 0:
                 # Normalized xywh to pixel xyxy format
@@ -405,10 +426,11 @@ def letterbox(img, new_shape=416, color=(128, 128, 128), mode='auto'):
         new_unpad = (new_shape, new_shape)
         ratiow, ratioh = new_shape / shape[1], new_shape / shape[0]
 
+    if shape[::-1] != new_unpad:  # resize
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_AREA)  # INTER_AREA is better, INTER_LINEAR is faster
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_AREA)  # resized, no border
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # padded square
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return img, ratiow, ratioh, dw, dh
 
 

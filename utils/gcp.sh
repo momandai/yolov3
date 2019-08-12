@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 
 # New VM
-rm -rf yolov3 weights coco
+rm -rf sample_data yolov3 darknet apex coco cocoapi knife knifec
 git clone https://github.com/ultralytics/yolov3
-# git clone https://github.com/cocodataset/cocoapi && cd cocoapi/PythonAPI && make && cd ../.. && cp -r cocoapi/PythonAPI/pycocotools yolov3
-git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" . --user && cd ..  && rm -rf apex
-bash yolov3/weights/download_yolov3_weights.sh && cp -r weights yolov3
-bash yolov3/data/get_coco_dataset_gdrive.sh
+git clone https://github.com/AlexeyAB/darknet && cd darknet && make GPU=1 CUDNN=1 CUDNN_HALF=1 OPENCV=1 && wget -c https://pjreddie.com/media/files/darknet53.conv.74 && cd ..
+git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" . --user && cd .. && rm -rf apex
+python3 -c "
+from yolov3.utils.google_utils import gdrive_download
+gdrive_download('1HaXkef9z6y5l4vUnCYgdmEAj61c6bfWO','coco.zip')
+gdrive_download('1GrFcTIIsKzOafZltUOS75RSahPrj2KyT','knife.zip')
+gdrive_download('19sLJEGHlIAIFHcEftq4aLCw_tkWZmhD1','knifec.zip')"
 sudo shutdown
 
 # Re-clone
@@ -27,6 +30,12 @@ python3 detect.py
 
 # Test
 python3 test.py --save-json
+
+# Evolve
+for i in {0..500}
+do
+  python3 train.py --data data/coco.data --img-size 320 --epochs 1 --batch-size 64 --accumulate 1 --evolve --bucket yolov4
+done
 
 # Git pull
 git pull https://github.com/ultralytics/yolov3  # master
@@ -59,6 +68,12 @@ python3 test.py --save-json --img-size 608
 python3 test.py --save-json --img-size 416
 python3 test.py --save-json --img-size 320
 sudo shutdown
+
+# Benchmark script
+git clone https://github.com/ultralytics/yolov3  # clone our repo
+git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" . --user && cd .. && rm -rf apex  # install nvidia apex
+python3 -c "from yolov3.utils.google_utils import gdrive_download; gdrive_download('1HaXkef9z6y5l4vUnCYgdmEAj61c6bfWO','coco.zip')"  # download coco dataset (20GB)
+cd yolov3 && clear && python3 train.py --epochs 1  # run benchmark (~30 min)
 
 # Unit tests
 python3 detect.py  # detect 2 persons, 1 tie

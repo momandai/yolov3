@@ -17,10 +17,9 @@ def detect(cfg,
            conf_thres=0.5,
            nms_thres=0.5,
            save_txt=False,
-           save_images=True,
-           webcam=True):
+           save_images=True):
     # Initialize
-    device = torch_utils.select_device()
+    device = torch_utils.select_device(force_cpu=ONNX_EXPORT)
     torch.backends.cudnn.benchmark = False  # set False for reproducible results
     if os.path.exists(output):
         shutil.rmtree(output)  # delete output folder
@@ -28,7 +27,7 @@ def detect(cfg,
 
     # Initialize model
     if ONNX_EXPORT:
-        s = (320, 192)  # (320, 192) or (416, 256) or (608, 352) onnx model image size (height, width)
+        s = (416, 416)  # (320, 192) or (416, 256) or (608, 352) onnx model image size (height, width)
         model = Darknet(cfg, s)
     else:
         model = Darknet(cfg, img_size)
@@ -40,28 +39,36 @@ def detect(cfg,
         _ = load_darknet_weights(model, weights)
 
     # Fuse Conv2d + BatchNorm2d layers
-    model.fuse()
+    # model.fuse()
 
     # Eval mode
     model.to(device).eval()
 
+    # Export mode
     if ONNX_EXPORT:
         img = torch.zeros((1, 3, s[0], s[1]))
         torch.onnx.export(model, img, 'weights/export.onnx', verbose=True)
         return
 
+    # Half precision
+    opt.half = opt.half and device.type != 'cpu'  # half precision only supported on cuda
+    if opt.half:
+        model.half()
+
     # Set Dataloader
     vid_path, vid_writer = None, None
-    if webcam:
+    if opt.webcam:
         save_images = False
-        dataloader = LoadWebcam(img_size=img_size)
+        dataloader = LoadWebcam(img_size=img_size, half=opt.half)
     else:
-        dataloader = LoadImages(images, img_size=img_size)
+        dataloader = LoadImages(images, img_size=img_size, half=opt.half)
 
     # Get classes and colors
     classes = load_classes(parse_data_cfg(data)['names'])
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(classes))]
 
+    # Run inference
+    t0 = time.time()
     for i, (path, img, im0, vid_cap) in enumerate(dataloader):
         t = time.time()
         save_path = str(Path(output) / Path(path).name)
@@ -69,7 +76,7 @@ def detect(cfg,
         # Get detections
         img = torch.from_numpy(img).unsqueeze(0).to(device)
         pred, _ = model(img)
-        det = non_max_suppression(pred, conf_thres, nms_thres)[0]
+        det = non_max_suppression(pred.float(), conf_thres, nms_thres)[0]
 
         if det is not None and len(det) > 0:
             # Rescale boxes from 416 to true image size
@@ -93,7 +100,7 @@ def detect(cfg,
 
         print('Done. (%.3fs)' % (time.time() - t))
 
-        if webcam:  # Show live webcam
+        if opt.webcam:  # Show live webcam
             cv2.imshow(weights, im0)
 
         if save_images:  # Save image with detections
@@ -116,6 +123,8 @@ def detect(cfg,
         if platform == 'darwin':  # macos
             os.system('open ' + output + ' ' + save_path)
 
+    print('Done. (%.3fs)' % (time.time() - t0))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -124,10 +133,12 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='path to weights file')
     parser.add_argument('--images', type=str, default='data/samples', help='path to images')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='fourcc output video codec (verify ffmpeg support)')
     parser.add_argument('--output', type=str, default='output', help='specifies the output path for images and videos')
+    parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
+    parser.add_argument('--webcam', action='store_true', help='use webcam')
     opt = parser.parse_args()
     print(opt)
 

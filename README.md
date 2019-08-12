@@ -5,7 +5,7 @@
     </td>
     <td align="center">
     <a href="https://www.ultralytics.com" target="_blank">
-    <img src="https://storage.googleapis.com/ultralytics/logo/logoname1000.png" width="200"></a>
+    <img src="https://storage.googleapis.com/ultralytics/logo/logoname1000.png" width="160"></a>
       <img src="https://user-images.githubusercontent.com/26833433/61591093-2b4d4480-abc2-11e9-8b46-d88eb1dabba1.jpg">
           <a href="https://itunes.apple.com/app/id1452689527" target="_blank">
     <img src="https://user-images.githubusercontent.com/26833433/50044365-9b22ac00-0082-11e9-862f-e77aee7aa7b0.png" width="180"></a>
@@ -43,21 +43,16 @@ Python 3.7 or later with the following `pip3 install -U -r requirements.txt` pac
 
 # Jupyter Notebook
 
-A jupyter notebook with training, inference and testing examples is available at: 
-https://colab.research.google.com/drive/1G8T-VFxQkjDe4idzN8F-hbIBqkkkQnxw
+Our Jupyter [notebook](https://colab.research.google.com/github/ultralytics/yolov3/blob/master/examples.ipynb) provides quick training, inference and testing examples.
 
 # Training
 
-**Start Training:** `python3 train.py` to begin training after downloading COCO data with `data/get_coco_dataset.sh`.
+**Start Training:** `python3 train.py` to begin training after downloading COCO data with `data/get_coco_dataset.sh`. Each epoch trains on 117,263 images from the train and validate COCO sets, and tests on 5000 images from the COCO validate set.
 
 **Resume Training:** `python3 train.py --resume` to resume training from `weights/last.pt`.
 
-Each epoch trains on 117,263 images from the train and validate COCO sets, and tests on 5000 images from the COCO validate set. Default training settings produce loss plots below, with **training speed of 0.25 s/batch on a V100 GPU (almost 50 COCO epochs/day)**.
-
-Here we see training results from `coco_1img.data`, `coco_10img.data` and `coco_100img.data`, 3 example files available in the `data/` folder, which train and test on the first 1, 10 and 100 images of the coco2014 trainval dataset.
-
-`from utils import utils; utils.plot_results()`
-![results](https://user-images.githubusercontent.com/26833433/56207787-ec9e7000-604f-11e9-94dd-e1fcc374270f.png)
+**Plot Training:** `from utils import utils; utils.plot_results()` plots training results from `coco_16img.data`, `coco_64img.data`, 2 example datasets available in the `data/` folder, which train and test on the first 16 and 64 images of the COCO2014-trainval dataset.
+![results](https://user-images.githubusercontent.com/26833433/62325526-1fa82a80-b4ac-11e9-958e-2a263bf15ab0.png)
 
 ## Image Augmentation
 
@@ -80,17 +75,19 @@ HS**V** Intensity | +/- 50%
 https://cloud.google.com/deep-learning-vm/  
 **Machine type:** n1-standard-8 (8 vCPUs, 30 GB memory)  
 **CPU platform:** Intel Skylake  
-**GPUs:** K80 ($0.20/hr), T4 ($0.35/hr), V100 ($0.80/hr) CUDA with Nvidia Apex FP16/32 
+**GPUs:** K80 ($0.20/hr), T4 ($0.35/hr), V100 ($0.83/hr) CUDA with [Nvidia Apex](https://github.com/NVIDIA/apex) FP16/32  
 **HDD:** 100 GB SSD  
 **Dataset:** COCO train 2014 (117,263 images)
 
-GPUs | `batch_size` | batch time | epoch time | epoch cost
+GPUs | `batch_size` | images/sec | epoch time | epoch cost
 --- |---| --- | --- | --- 
-1 K80 | 64 (32x2) | 2.9s  | 175min  | $0.58
-1 T4 | 64 (32x2) | 0.8s  | 49min  | $0.29
-1 2080ti | 64 (32x2) | -  | -  | -
-1 V100 | 64 (32x2) | 0.38s | 23min | $0.31
-2 V100 | 64 (64x1) | 0.38s | 23min | $0.62
+K80 | 64 (32x2) | 11  | 175 min  | $0.58
+T4 | 64 (32x2) | 40  | 49 min  | $0.29
+T4 x2 | 64 (64x1) | 61  | 32 min  | $0.36
+V100 | 64 (32x2) | 115 | 17 min | $0.24
+V100 x2 | 64 (64x1) | 150 | 13 min | $0.36
+2080Ti | 64 (32x2) | 69  | 28 min  | - 
+
 
 # Inference
 
@@ -107,7 +104,7 @@ GPUs | `batch_size` | batch time | epoch time | epoch cost
 
 ## Webcam
 
-`detect.py` with `webcam=True` shows a live webcam feed.
+`python3 detect.py --webcam` shows a live webcam feed.
 
 # Pretrained Weights
 
