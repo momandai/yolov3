@@ -28,7 +28,7 @@ with open(in_file, 'r') as f:
     # label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
     #                     for x in img_files]
 
-    for img_file in tqdm.tqdm(img_files):
+    for img_file in tqdm.tqdm(img_files[:2000]):
         label_file = img_file.replace('images', 'labels').replace(os.path.splitext(img_file)[-1], '.txt')
         if os.path.isfile(label_file):
             with open(label_file, 'r') as f_label_file:

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from utils.parse_config import *
 from utils.utils import *
 
-ONNX_EXPORT = True
+ONNX_EXPORT = False
 
 
 def create_modules(module_defs):
@@ -185,15 +185,14 @@ class YOLOLayer(nn.Module):
             # anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2)) / ngu
 
             # p = p.view(1, 1, -1, self.nx*self.ny).contiguous()
-            p = p.view(1, self.na, 5 + self.nc, self.nx*self.ny).contiguous()
-            p = p.permute(0, 1, 3, 2).contiguous()
-            p = p.view(1, -1, 5 + self.nc)
+            p = p.view(1, self.na, 5 + self.nc, self.nx*self.ny).contiguous().permute(0, 1, 3, 2).contiguous().view(1, 1, -1, 5 + self.nc)
             # p = p.view(-1, 5 + self.nc)
-            xy = torch.sigmoid(p[..., 0:2])  # x, y
-            wh = torch.exp(p[..., 2:4])  # width, height
-            p_conf = torch.sigmoid(p[..., 4:5])  # Conf
-            p_cls = F.softmax(p[..., 5:85], 2) * p_conf  # SSD-like conf
-            return torch.cat((xy, wh, p_conf, p_cls), 2)
+            # xy = p[..., 0:2].contiguous()
+            # xy = torch.sigmoid(xy)  # x, y
+            # wh = torch.exp(p[..., 2:4]).contiguous()  # width, height
+            # p_conf = torch.sigmoid(p[..., 4:5]).contiguous()  # Conf
+            # p_cls = F.softmax(p[..., 5:85], 3).contiguous() * p_conf  # SSD-like conf
+            return p
 
             # p = p.view(1, -1, 5 + self.nc)
             # xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
@@ -273,7 +272,7 @@ class Darknet(nn.Module):
         if self.training:
             return output
         elif ONNX_EXPORT:
-            output = torch.cat(output, 1)  # cat 3 layers 85 x (507, 2028, 8112) to 85 x 10647
+            output = torch.cat(output, 2)  # cat 3 layers 85 x (507, 2028, 8112) to 85 x 10647
             # nc = self.module_list[self.yolo_layers[0]][0].nc  # number of classes
             return output
         else:
