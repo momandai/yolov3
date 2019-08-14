@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from utils.parse_config import *
 from utils.utils import *
 
-ONNX_EXPORT = False
+ONNX_EXPORT = True
 
 
 def create_modules(module_defs):
@@ -167,37 +167,54 @@ class YOLOLayer(nn.Module):
                 create_grids(self, img_size, (nx, ny), p.device)
 
         # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
-        p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
+        # p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
+        # tmp1 = p.view(bs, self.na, self.nc + 5, self.ny, self.nx)
+        # tmp2 = tmp1.transpose(2, 3).transpose(3, 4)
+        # tmp3 = tmp2.contiguous()
+
 
         if self.training:
+            # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+            p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
             return p
 
         elif ONNX_EXPORT:
             # Constants CAN NOT BE BROADCAST, ensure correct shape!
-            ngu = self.ng.repeat((1, self.na * self.nx * self.ny, 1))
-            grid_xy = self.grid_xy.repeat((1, self.na, 1, 1, 1)).view((1, -1, 2))
-            anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2)) / ngu
+            # ngu = self.ng.repeat((1, self.na * self.nx * self.ny, 1))
+            # grid_xy = self.grid_xy.repeat((1, self.na, 1, 1, 1)).view((1, -1, 2))
+            # anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2)) / ngu
 
-            # p = p.view(-1, 5 + self.nc)
-            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy[0]  # x, y
-            # wh = torch.exp(p[..., 2:4]) * anchor_wh[0]  # width, height
-            # p_conf = torch.sigmoid(p[:, 4:5])  # Conf
-            # p_cls = F.softmax(p[:, 5:85], 1) * p_conf  # SSD-like conf
-            # return torch.cat((xy / ngu[0], wh, p_conf, p_cls), 1).t()
-
+            # p = p.view(1, 1, -1, self.nx*self.ny).contiguous()
+            p = p.view(1, self.na, 5 + self.nc, self.nx*self.ny).contiguous()
+            p = p.permute(0, 1, 3, 2).contiguous()
             p = p.view(1, -1, 5 + self.nc)
-            xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
-            wh = torch.exp(p[..., 2:4]) * anchor_wh  # width, height
+            # p = p.view(-1, 5 + self.nc)
+            xy = torch.sigmoid(p[..., 0:2])  # x, y
+            wh = torch.exp(p[..., 2:4])  # width, height
             p_conf = torch.sigmoid(p[..., 4:5])  # Conf
-            p_cls = p[..., 5:5 + self.nc]
-            # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
-            # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
-            p_cls = torch.exp(p_cls).permute((2, 1, 0))
-            p_cls = p_cls / p_cls.sum(0).unsqueeze(0) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
-            p_cls = p_cls.permute(2, 1, 0)
-            return torch.cat((xy / ngu, wh, p_conf, p_cls), 2).squeeze().t()
+            p_cls = F.softmax(p[..., 5:85], 2) * p_conf  # SSD-like conf
+            return torch.cat((xy, wh, p_conf, p_cls), 2)
+
+            # p = p.view(1, -1, 5 + self.nc)
+            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
+            # wh = torch.exp(p[..., 2:4]) * anchor_wh  # width, height
+            # p_conf = torch.sigmoid(p[..., 4:5])  # Conf
+            # p_cls = p[..., 5:5 + self.nc]
+            # # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
+            # # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
+            # p_cls = torch.exp(p_cls).permute((2, 1, 0))
+            # # tmp = p_cls.sum(0)
+            # # tmp2 = tmp.unsqueeze(0)
+            # # tmp3 = tmp.view(1, self.na * self.nx * self.ny, 1)
+            # p_cls = p_cls / p_cls.sum(0).view(1, self.na * self.nx * self.ny, 1) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
+            # p_cls = p_cls.permute(2, 1, 0)
+            # ret = torch.cat((xy / ngu, wh, p_conf, p_cls), 2)
+            # ret = ret.view(-1, 5 + self.nc).t()
+            # return ret
 
         else:  # inference
+            # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+            p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
             io = p.clone()  # inference output
             io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
@@ -230,8 +247,8 @@ class Darknet(nn.Module):
 
     def forward(self, x, var=None):
         # print(x.shape)
-        img_size = max(x.shape[-2:])
-        # img_size = 416
+        # img_size = max(x.shape[-2:])
+        img_size = 416
         layer_outputs = []
         output = []
 
@@ -257,8 +274,8 @@ class Darknet(nn.Module):
             return output
         elif ONNX_EXPORT:
             output = torch.cat(output, 1)  # cat 3 layers 85 x (507, 2028, 8112) to 85 x 10647
-            nc = self.module_list[self.yolo_layers[0]][0].nc  # number of classes
-            return output[5:5 + nc].t(), output[:4].t()  # ONNX scores, boxes
+            # nc = self.module_list[self.yolo_layers[0]][0].nc  # number of classes
+            return output
         else:
             io, p = list(zip(*output))  # inference output, training output
             return torch.cat(io, 1), p

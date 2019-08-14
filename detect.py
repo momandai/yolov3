@@ -28,7 +28,7 @@ def detect(cfg,
 
     # Initialize model
     if ONNX_EXPORT:
-        s = (320, 192)  # (320, 192) or (416, 256) or (608, 352) onnx model image size (height, width)
+        s = (416, 416)  # (320, 192) or (416, 256) or (608, 352) onnx model image size (height, width)
         model = Darknet(cfg, s)
     else:
         model = Darknet(cfg, img_size)
@@ -46,6 +46,7 @@ def detect(cfg,
     model.to(device).eval()
 
     if ONNX_EXPORT:
+        model.cpu()
         img = torch.zeros((1, 3, s[0], s[1]))
         torch.onnx.export(model, img, 'weights/export.onnx', verbose=True)
         return
