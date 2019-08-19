@@ -185,7 +185,7 @@ class YOLOLayer(nn.Module):
             # anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2)) / ngu
 
             # p = p.view(1, 1, -1, self.nx*self.ny).contiguous()
-            p = p.view(1, self.na, 5 + self.nc, self.nx*self.ny).contiguous().permute(0, 1, 3, 2).contiguous().view(1, 1, -1, 5 + self.nc)
+            # p = p.view(1, self.na, 5 + self.nc, self.nx*self.ny).contiguous().permute(0, 1, 3, 2).contiguous().view(1, 1, -1, 5 + self.nc)
             # p = p.view(-1, 5 + self.nc)
             # xy = p[..., 0:2].contiguous()
             # xy = torch.sigmoid(xy)  # x, y
@@ -272,7 +272,7 @@ class Darknet(nn.Module):
         if self.training:
             return output
         elif ONNX_EXPORT:
-            output = torch.cat(output, 2)  # cat 3 layers 85 x (507, 2028, 8112) to 85 x 10647
+            # output = torch.cat(output, 2)  # cat 3 layers 85 x (507, 2028, 8112) to 85 x 10647
             # nc = self.module_list[self.yolo_layers[0]][0].nc  # number of classes
             return output
         else:

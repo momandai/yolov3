@@ -18,7 +18,7 @@ def detect(cfg,
            nms_thres=0.5,
            save_txt=False,
            save_images=True,
-           webcam=True):
+           webcam=False):
     # Initialize
     device = torch_utils.select_device()
     torch.backends.cudnn.benchmark = False  # set False for reproducible results
@@ -47,7 +47,10 @@ def detect(cfg,
 
     if ONNX_EXPORT:
         model.cpu()
-        img = torch.zeros((1, 3, s[0], s[1]))
+        # img = torch.zeros((1, 3, s[0], s[1]))
+        dataloader = LoadImages(images, img_size=img_size)
+        i, (path, img, im0, vid_cap) = list(enumerate(dataloader))[0]
+        img = torch.from_numpy(img).unsqueeze(0).cpu()
         torch.onnx.export(model, img, 'weights/export.onnx', verbose=True)
         return
 
