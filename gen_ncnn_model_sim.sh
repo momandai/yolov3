@@ -8,6 +8,6 @@ cd /home/neptune/github/ncnn/build/tools/onnx
 
 ../ncnn2mem yolov3.param yolov3.bin yolov3.id.h yolov3.mem.hbash
 
-cp yolov3.param yolov3.bin /home/neptune/cppprj/ncnn_tst/cmake-build-debug/
+cp yolov3.param yolov3.bin /home/neptune/github/momandai/ncnn_momandai/cmake-build-debug/examples
 
 
