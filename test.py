@@ -69,6 +69,7 @@ def test(cfg,
 
         # Run model
         inf_out, train_out = model(imgs)  # inference and training outputs
+        test = inf_out.cpu().numpy()
 
         # Compute loss
         if hasattr(model, 'hyp'):  # if model has loss hyperparameters

@@ -1,5 +1,5 @@
 classes=2
-train=./data/coco_person_face.txt
+train=./data/coco_person_face_valid.txt
 valid=./data/coco_person_face_valid.txt
 names=data/coco_person_face.names
 backup=backup/

@@ -18,7 +18,7 @@ def detect(cfg,
            nms_thres=0.5,
            save_txt=False,
            save_images=True,
-           webcam=False):
+           webcam=True):
     # Initialize
     device = torch_utils.select_device()
     torch.backends.cudnn.benchmark = False  # set False for reproducible results
